@@ -830,6 +830,8 @@ func (bsg *BYOCGatewayServer) startStreamProcessing(ctx context.Context, stream 
 			return fmt.Errorf("invalid publish URL: %w", err)
 		}
 		bsg.startTricklePublish(ctx, pub, params, orch.Address(), orch.URL())
+
+		bsg.updateStreamPipelineParams(stream.StreamID, params)
 	}
 
 	if orchUrls.orchSubscribeUrl != "" {
@@ -1062,6 +1064,36 @@ func (bsg *BYOCGatewayServer) StreamStatus() http.Handler {
 			return
 		}
 	})
+}
+
+type SegmentDataReader struct {
+	Data []byte
+	pos  int
+}
+
+func (r *SegmentDataReader) Read(p []byte) (n int, err error) {
+	if r.pos >= len(r.Data) {
+		return 0, io.EOF
+	}
+	n = copy(p, r.Data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func (r *SegmentDataReader) Clone() media.CloneableReader {
+	return &SegmentDataReader{Data: r.Data}
+}
+
+func (bsg *BYOCGatewayServer) PushSegment(streamId string, segment []byte) error {
+	stream, err := bsg.streamPipeline(streamId)
+	if err != nil {
+		return fmt.Errorf("stream not found: %s", streamId)
+	}
+
+	stream.streamParams.liveParams.segmentReader.Read(&SegmentDataReader{Data: segment})
+	//stream.streamParams.SegmentPub.Write(bytes.NewReader(segment))
+
+	return nil
 }
 
 func (bsg *BYOCGatewayServer) monitorCurrentLiveSessions() {

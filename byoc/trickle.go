@@ -45,7 +45,7 @@ func (bsg *BYOCGatewayServer) startTricklePublish(ctx context.Context, url *url.
 		return
 	}
 	ctx, cancel := context.WithCancel(ctx)
-
+	params.SegmentPub = publisher
 	// TODO: implement live payment sender for BYOC streaming
 	// Start payments which probes a segment every "paymentProcessInterval" and sends a payment
 	//priceInfo := sess.OrchestratorInfo.PriceInfo

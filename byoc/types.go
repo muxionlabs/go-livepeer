@@ -81,6 +81,7 @@ type BYOCStreamPipeline struct {
 	StreamID     string
 	Params       []byte
 	Pipeline     string
+	SegmentPub   *trickle.TricklePublisher
 	ControlPub   *trickle.TricklePublisher
 	StopControl  func()
 	ReportUpdate func([]byte)
@@ -232,6 +233,7 @@ type byocAIRequestParams struct {
 	os   drivers.OSSession
 
 	liveParams *byocLiveRequestParams
+	SegmentPub *trickle.TricklePublisher
 
 	inputStreamExists func(streamId string) bool
 }
