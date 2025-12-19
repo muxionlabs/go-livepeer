@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/livepeer/go-livepeer/clog"
@@ -112,6 +113,26 @@ func (bsg *BYOCGatewayServer) TranscodeWithAIStream() http.Handler {
 
 				glog.Infof("Pushing segment to NEW AI stream for manifestID=%s", transcodeConfiguration.ManifestID)
 				bsg.PushSegment(transcodeConfiguration.ManifestID, body)
+			}()
+
+			// Monitor for transcoding stopping for this manifestID and stop AI stream if transcoding done
+			go func() {
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+
+				for range ticker.C {
+					if !bsg.streamPipelineExists(transcodeConfiguration.ManifestID) {
+						bsg.stopStreamPipeline(
+							transcodeConfiguration.ManifestID,
+							fmt.Errorf(
+								"stopping AI stream pipeline because transcoding stopped for manifestID=%s",
+								transcodeConfiguration.ManifestID,
+							),
+						)
+						bsg.removeStreamPipeline(transcodeConfiguration.ManifestID)
+						return // stop checking once pipeline is stopped
+					}
+				}
 			}()
 		}
 
