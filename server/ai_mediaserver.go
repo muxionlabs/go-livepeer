@@ -123,7 +123,7 @@ func startAIMediaServer(ctx context.Context, ls *LivepeerServer) error {
 	ls.HTTPMux.Handle("/live/video-to-video/{streamId}/status", ls.GetLiveVideoToVideoStatus())
 
 	//API for dynamic capabilities
-	ls.byocSrv = byoc.NewBYOCGatewayServer(ls.LivepeerNode, &StreamStatusStore, whipServer, whepServer, ls.HTTPMux)
+	ls.byocSrv = byoc.NewBYOCGatewayServer(ls.LivepeerNode, &StreamStatusStore, whipServer, whepServer, ls.HTTPMux, ls.HandlePush)
 
 	media.StartFileCleanup(ctx, ls.LivepeerNode.WorkDir)
 

@@ -35,7 +35,7 @@ func newTestBYOCGatewayServer(node *core.LivepeerNode) *BYOCGatewayServer {
 	}
 	statusStore := NewMockStreamStatusStore()
 
-	return NewBYOCGatewayServer(node, statusStore, nil, nil, http.NewServeMux())
+	return NewBYOCGatewayServer(node, statusStore, nil, nil, http.NewServeMux(), nil)
 }
 
 // mockStreamStatusStore is a mock implementation of streamStatusStore for testing

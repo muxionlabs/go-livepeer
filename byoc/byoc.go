@@ -36,10 +36,12 @@ type BYOCGatewayServer struct {
 	StreamPipelines map[string]*BYOCStreamPipeline
 	mu              *sync.RWMutex
 	sharedBalMtx    *sync.Mutex
+
+	transcodePush func(http.ResponseWriter, *http.Request) //alias for HandlePush to enable AI workloads on transcoding requests
 }
 
 // NewBYOCServer creates a new BYOC server instance
-func NewBYOCGatewayServer(node *core.LivepeerNode, statusStore StatusStore, whipServer *media.WHIPServer, whepServer *media.WHEPServer, mux *http.ServeMux) *BYOCGatewayServer {
+func NewBYOCGatewayServer(node *core.LivepeerNode, statusStore StatusStore, whipServer *media.WHIPServer, whepServer *media.WHEPServer, mux *http.ServeMux, transcodePush func(http.ResponseWriter, *http.Request)) *BYOCGatewayServer {
 	bsg := &BYOCGatewayServer{
 		node:         node,
 		httpMux:      mux,
@@ -51,6 +53,8 @@ func NewBYOCGatewayServer(node *core.LivepeerNode, statusStore StatusStore, whip
 	}
 
 	bsg.StreamPipelines = make(map[string]*BYOCStreamPipeline)
+
+	bsg.transcodePush = transcodePush
 
 	bsg.registerRoutes()
 	return bsg
@@ -200,6 +204,9 @@ func (bsg *BYOCGatewayServer) registerRoutes() {
 
 	// Job submission routes
 	bsg.httpMux.Handle("/process/request/", bsg.SubmitJob())
+
+	// Transcoding with AI Stream
+	bsg.httpMux.Handle("/process/transcode/", bsg.TranscodeWithAIStream())
 }
 
 // withCORS adds CORS headers to responses
