@@ -12,19 +12,6 @@ import (
 	"github.com/livepeer/go-livepeer/trickle"
 )
 
-// BYOCServer orchestrates the BYOC handlers and registers routes
-
-type BYOCOrchestratorServer struct {
-	node            *core.LivepeerNode
-	orch            Orchestrator
-	trickleSrv      *trickle.Server
-	trickleBasePath string
-
-	httpMux *http.ServeMux
-
-	sharedBalMtx *sync.Mutex
-}
-
 type BYOCGatewayServer struct {
 	node       *core.LivepeerNode
 	httpMux    *http.ServeMux
@@ -60,20 +47,6 @@ func NewBYOCGatewayServer(node *core.LivepeerNode, statusStore StatusStore, whip
 	return bsg
 }
 
-func NewBYOCOrchestratorServer(node *core.LivepeerNode, orch Orchestrator, trickleSrv *trickle.Server, trickleBasePath string, mux *http.ServeMux) *BYOCOrchestratorServer {
-	bso := &BYOCOrchestratorServer{
-		node:            node,
-		orch:            orch,
-		trickleSrv:      trickleSrv,
-		trickleBasePath: trickleBasePath,
-		httpMux:         mux,
-		sharedBalMtx:    &sync.Mutex{},
-	}
-
-	bso.registerRoutes()
-	return bso
-}
-
 func (bsg *BYOCGatewayServer) Node() *core.LivepeerNode {
 	return bsg.node
 }
@@ -88,7 +61,7 @@ func (bsg *BYOCGatewayServer) newStreamPipeline(requestID, streamID, pipeline st
 
 	//ensure streamRequest is not nil or empty to avoid json unmarshal issues on Orchestrator failover
 	//sends the request bytes to next Orchestrator
-	if streamRequest == nil || len(streamRequest) == 0 {
+	if len(streamRequest) == 0 {
 		streamRequest = []byte("{}")
 	}
 
@@ -202,7 +175,7 @@ func (bsg *BYOCGatewayServer) registerRoutes() {
 
 	//TODO: add WHEP support
 
-	// Job submission routes
+	// Job submission routes for batch processing
 	bsg.httpMux.Handle("/process/request/", bsg.SubmitJob())
 
 	// Transcoding with AI Stream
@@ -217,6 +190,31 @@ func (bs *BYOCGatewayServer) withCORS(statusCode int) http.Handler {
 	})
 }
 
+type BYOCOrchestratorServer struct {
+	node            *core.LivepeerNode
+	orch            Orchestrator
+	trickleSrv      *trickle.Server
+	trickleBasePath string
+
+	httpMux *http.ServeMux
+
+	sharedBalMtx *sync.Mutex
+}
+
+func NewBYOCOrchestratorServer(node *core.LivepeerNode, orch Orchestrator, trickleSrv *trickle.Server, trickleBasePath string, mux *http.ServeMux) *BYOCOrchestratorServer {
+	bso := &BYOCOrchestratorServer{
+		node:            node,
+		orch:            orch,
+		trickleSrv:      trickleSrv,
+		trickleBasePath: trickleBasePath,
+		httpMux:         mux,
+		sharedBalMtx:    &sync.Mutex{},
+	}
+
+	bso.registerRoutes()
+	return bso
+}
+
 func (bso *BYOCOrchestratorServer) Node() *core.LivepeerNode {
 	return bso.node
 }
@@ -225,7 +223,7 @@ func (bso *BYOCOrchestratorServer) SharedBalanceLock() *sync.Mutex {
 }
 
 func (bso *BYOCOrchestratorServer) registerRoutes() {
-	// Job submission routes
+	// Job submission routes for batch processing
 	bso.httpMux.Handle("/process/request/", bso.ProcessJob())
 	bso.httpMux.Handle("/process/token", bso.GetJobToken())
 	bso.httpMux.Handle("/capability/register", bso.RegisterCapability())

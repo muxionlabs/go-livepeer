@@ -24,13 +24,11 @@ import (
 
 func (bsg *BYOCGatewayServer) StartStream() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions {
-			corsHeaders(w, r.Method)
-			w.WriteHeader(http.StatusNoContent)
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		// Create fresh context instead of using r.Context() since ctx will outlive the request
 		ctx := r.Context()
 
 		corsHeaders(w, r.Method)
@@ -45,7 +43,7 @@ func (bsg *BYOCGatewayServer) StartStream() http.Handler {
 		//setup body size limit, will error if too large
 		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 		streamUrls, code, err := bsg.setupStream(ctx, r, gatewayJob)
-		if err != nil {
+		if err != nil || streamUrls == nil {
 			clog.Errorf(ctx, "Error setting up stream: %s", err)
 			http.Error(w, err.Error(), code)
 			return
@@ -55,15 +53,10 @@ func (bsg *BYOCGatewayServer) StartStream() http.Handler {
 
 		go bsg.monitorStream(gatewayJob.Job.Req.ID)
 
-		if streamUrls != nil {
-			// Stream started successfully
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(streamUrls)
-		} else {
-			//case where we are subscribing to own streams in setupStream
-			w.WriteHeader(http.StatusNoContent)
-		}
+		// Stream started successfully
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(streamUrls)
 	})
 }
 
@@ -121,7 +114,10 @@ func (bsg *BYOCGatewayServer) sendStopStreamToOrch(ctx context.Context, streamID
 		},
 		node: bsg.node,
 	}
-	stopJob.sign()
+	err = stopJob.sign()
+	if err != nil {
+		return nil, fmt.Errorf("error signing stop job: %w", err)
+	}
 
 	jobSender, err := getJobSender(ctx, bsg.node)
 	if err != nil {
@@ -139,6 +135,7 @@ func (bsg *BYOCGatewayServer) sendStopStreamToOrch(ctx context.Context, streamID
 		return nil, fmt.Errorf("error sending stop job to orchestrator: %w", err)
 	}
 	defer resp.Body.Close()
+
 	body, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("error reading stop response body: %w", err)
@@ -183,12 +180,7 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 		clog.Infof(ctx, "Starting stream processing")
 		//refresh the token if not first Orch to confirm capacity and new ticket params
 		if firstProcessed {
-			newToken, err := getToken(ctx, getNewTokenTimeout, orch.ServiceAddr, gatewayJob.Job.Req.Capability, gatewayJob.Job.Req.Sender, gatewayJob.Job.Req.Sig)
-			if err != nil {
-				clog.Errorf(ctx, "Error getting token for orch=%v err=%v", orch.ServiceAddr, err)
-				continue
-			}
-			orch = *newToken
+			orch = bsg.refreshToken(ctx, streamID, orch, gatewayJob)
 		}
 
 		ctx = clog.AddVal(ctx, "orch", hexutil.Encode(orch.TicketParams.Recipient))
@@ -215,8 +207,9 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 			clog.Errorf(ctx, "job not able to be processed by Orchestrator %v err=%v ", orch.ServiceAddr, err.Error())
 			continue
 		}
-		defer orchResp.Body.Close()
+		//discard response and close
 		io.Copy(io.Discard, orchResp.Body)
+		orchResp.Body.Close()
 
 		bsg.statusStore.StoreKey(streamID, "orchestrator", orch.ServiceAddr)
 		orchUrls := orchTrickleUrls{
@@ -259,6 +252,7 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 			break
 		}
 		if firstProcessed {
+			lastSwap = time.Now()
 			swapCnt++
 		} else {
 			firstProcessed = true
@@ -286,6 +280,17 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 	//all orchestrators tried or stream ended, stop the stream
 	// stream stop called in defer above
 	exitErr = errors.New("All Orchestrators exhausted, restart the stream")
+}
+
+func (bsg *BYOCGatewayServer) refreshToken(ctx context.Context, streamID string, orch JobToken, gatewayJob *gatewayJob) JobToken {
+	clog.Infof(ctx, "Refreshing token for orchestrator %v", orch.ServiceAddr)
+	newToken, err := getToken(ctx, getNewTokenTimeout, orch.ServiceAddr, gatewayJob.Job.Req.Capability, gatewayJob.Job.Req.Sender, gatewayJob.Job.Req.Sig)
+	if err != nil {
+		clog.Errorf(ctx, "Error getting token for orch=%v err=%v", orch.ServiceAddr, err)
+		return orch
+	}
+
+	return *newToken
 }
 
 func (bsg *BYOCGatewayServer) monitorStream(streamId string) {
@@ -873,7 +878,7 @@ func (bsg *BYOCGatewayServer) StreamData() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		streamId := r.PathValue("streamId")
 		if streamId == "" {
-			http.Error(w, "stream name is required", http.StatusBadRequest)
+			http.Error(w, "Missing stream name", http.StatusBadRequest)
 			return
 		}
 
@@ -897,7 +902,6 @@ func (bsg *BYOCGatewayServer) StreamData() http.Handler {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -1022,11 +1026,9 @@ func (bsg *BYOCGatewayServer) UpdateStream() http.Handler {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			// Call reportUpdate callback if available
-			if reportUpdate != nil {
-				reportUpdate(data)
-			}
+		// Call reportUpdate callback if available
+		if reportUpdate != nil {
+			reportUpdate(data)
 		}
 
 		clog.Infof(ctx, "stream params updated for stream=%s, but orchestrator returned status %d", streamId, resp.StatusCode)
@@ -1142,9 +1144,4 @@ func (bsg *BYOCGatewayServer) runStats(ctx context.Context, whipConn *media.WHIP
 			})
 		}
 	}
-}
-
-func stopProcessing(ctx context.Context, params byocAIRequestParams, err error) {
-	clog.InfofErr(ctx, "Stopping processing", err)
-	params.liveParams.kickOrch(err)
 }

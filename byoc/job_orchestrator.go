@@ -117,6 +117,7 @@ func (bso *BYOCOrchestratorServer) GetJobToken() http.Handler {
 
 		if bso.node.NodeType != core.OrchestratorNode {
 			http.Error(w, "request not allowed", http.StatusBadRequest)
+			return
 		}
 
 		remoteAddr := getRemoteAddr(r)
@@ -266,6 +267,7 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 	if err != nil {
 		clog.Errorf(ctx, "Unable to create request err=%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	// set the headers
 	req.Header.Add("Content-Length", r.Header.Get("Content-Length"))
@@ -441,25 +443,11 @@ func (bso *BYOCOrchestratorServer) setupOrchJob(ctx context.Context, r *http.Req
 	if err != nil {
 		return nil, errors.New("Could not get job price")
 	}
-	clog.V(common.DEBUG).Infof(ctx, "job price=%v units=%v", jobPrice.PricePerUnit, jobPrice.PixelsPerUnit)
 
-	//no payment included, confirm if balance remains
-	jobPriceRat := big.NewRat(jobPrice.PricePerUnit, jobPrice.PixelsPerUnit)
-	orchBal := big.NewRat(0, 1)
-	// if price is 0, no payment required
-	if jobPriceRat.Cmp(big.NewRat(0, 1)) > 0 {
-		minBal := new(big.Rat).Mul(jobPriceRat, big.NewRat(60, 1)) //minimum 1 minute balance
-		//process payment if included
-		orchBal, pmtErr := bso.processPayment(ctx, sender, jobReq.Capability, r.Header.Get(jobPaymentHeaderHdr))
-		if pmtErr != nil {
-			//log if there are payment errors but continue, balance will runout and clean up
-			clog.Infof(ctx, "job payment error: %v", pmtErr)
-		}
-
-		if orchBal.Cmp(minBal) < 0 {
-			orch.FreeExternalCapabilityCapacity(jobReq.Capability)
-			return nil, errInsufficientBalance
-		}
+	pmtErr := bso.confirmPayment(ctx, sender, jobReq.Capability, jobPrice, r.Header.Get(jobPaymentHeaderHdr))
+	if pmtErr != nil {
+		orch.FreeExternalCapabilityCapacity(jobReq.Capability)
+		return nil, pmtErr
 	}
 
 	var jobDetails JobRequestDetails
@@ -468,9 +456,33 @@ func (bso *BYOCOrchestratorServer) setupOrchJob(ctx context.Context, r *http.Req
 		return nil, fmt.Errorf("Unable to unmarshal job request details err=%v", err)
 	}
 
-	clog.Infof(ctx, "job request verified id=%v sender=%v capability=%v timeout=%v price=%v balance=%v", jobReq.ID, jobReq.Sender, jobReq.Capability, jobReq.Timeout, jobPriceRat.FloatString(0), orchBal.FloatString(0))
+	clog.Infof(ctx, "job request verified id=%v sender=%v capability=%v timeout=%v", jobReq.ID, jobReq.Sender, jobReq.Capability, jobReq.Timeout)
 
 	return &orchJob{Req: jobReq, Sender: sender, JobPrice: jobPrice, Details: &jobDetails}, nil
+}
+
+func (bso *BYOCOrchestratorServer) confirmPayment(ctx context.Context, sender ethcommon.Address, capability string, jobPrice *net.PriceInfo, paymentHdr string) error {
+
+	clog.V(common.DEBUG).Infof(ctx, "job price=%v units=%v", jobPrice.PricePerUnit, jobPrice.PixelsPerUnit)
+
+	//no payment included, confirm if balance remains
+	jobPriceRat := big.NewRat(jobPrice.PricePerUnit, jobPrice.PixelsPerUnit)
+	// if price is 0, no payment required
+	if jobPriceRat.Cmp(big.NewRat(0, 1)) > 0 {
+		minBal := new(big.Rat).Mul(jobPriceRat, big.NewRat(60, 1)) //minimum 1 minute balance
+		//process payment if included
+		orchBal, pmtErr := bso.processPayment(ctx, sender, capability, paymentHdr)
+		if pmtErr != nil {
+			//log if there are payment errors but continue, balance will runout and clean up
+			clog.Infof(ctx, "job payment error: %v", pmtErr)
+		}
+
+		if orchBal.Cmp(minBal) < 0 {
+			return errInsufficientBalance
+		}
+	}
+
+	return nil
 }
 
 // process payment and return balance
@@ -503,13 +515,7 @@ func (bso *BYOCOrchestratorServer) chargeForCompute(start time.Time, price *net.
 func (bso *BYOCOrchestratorServer) addPaymentBalanceHeader(w http.ResponseWriter, sender ethcommon.Address, jobId string) {
 	//check balance and return remaning balance in header of response
 	senderBalance := bso.getPaymentBalance(sender, jobId)
-	if senderBalance != nil {
-		w.Header().Set("Livepeer-Payment-Balance", senderBalance.FloatString(0))
-		return
-	}
-	glog.Infof("sender balance is nil")
-	//no balance
-	w.Header().Set("Livepeer-Payment-Balance", "0")
+	w.Header().Set("Livepeer-Payment-Balance", senderBalance.FloatString(0))
 }
 
 func (bso *BYOCOrchestratorServer) getPaymentBalance(sender ethcommon.Address, jobId string) *big.Rat {

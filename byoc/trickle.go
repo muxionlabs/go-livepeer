@@ -1,5 +1,8 @@
 package byoc
 
+//NOTE: This file is largely duplicated code from server/ai_live_video.go.  Main modifications are to interact directly
+// with BYOC server structures rather than core LivepeerNode structures.
+
 import (
 	"bufio"
 	"bytes"
@@ -941,4 +944,9 @@ func logToDisk(ctx context.Context, r media.CloneableReader, workdir string, req
 			return
 		}
 	}()
+}
+
+func stopProcessing(ctx context.Context, params byocAIRequestParams, err error) {
+	clog.InfofErr(ctx, "Stopping processing", err)
+	params.liveParams.kickOrch(err)
 }
