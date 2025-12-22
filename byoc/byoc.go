@@ -187,6 +187,7 @@ func (bsg *BYOCGatewayServer) registerRoutes() {
 
 	// Transcoding with AI Stream
 	bsg.httpMux.Handle("/process/transcode/", bsg.TranscodeWithAIStream())
+	bsg.httpMux.Handle("/process/segment", bsg.TranscodeWithAIStream2())
 }
 
 // withCORS adds CORS headers to responses

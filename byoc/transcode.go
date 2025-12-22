@@ -23,6 +23,78 @@ type authWebhookResponseWithAI struct {
 	AIParams   json.RawMessage `json:"aiParams"`
 }
 
+func (bsg *BYOCGatewayServer) TranscodeWithAIStream2() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		//support two ways to set the AI params for processing:
+		// 1) Add aiParams to Livepeer-Transcode-Configuration header
+		// 2) Use the Livepeer header with base64-encoded request used in BYOC AI stream start
+		var transcodeConfiguration authWebhookResponseWithAI
+		transcodeConfigurationHeader := r.Header.Get("Livepeer-Transcode-Configuration")
+		var aiConfigHdr string
+		if transcodeConfigurationHeader != "" {
+			if err := json.Unmarshal([]byte(transcodeConfigurationHeader), &transcodeConfiguration); err != nil {
+				httpErr := fmt.Sprintf(`failed to parse transcode config header: %q`, err)
+				glog.Error(httpErr)
+				http.Error(w, httpErr, http.StatusBadRequest)
+				return
+			}
+			aiConfigHdr = base64.StdEncoding.EncodeToString(transcodeConfiguration.AIParams)
+		} else {
+			configHdr := r.Header.Get("Livepeer")
+			if configHdr == "" {
+				httpErr := "missing Livepeer configuration header"
+				glog.Error(httpErr)
+				http.Error(w, httpErr, http.StatusBadRequest)
+				return
+			}
+			aiConfigHdr = configHdr
+		}
+
+		if len(transcodeConfiguration.AIParams) == 0 {
+			glog.Error("no aiParams in config")
+			http.Error(w, "no aiParams in config", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			clog.Errorf(r.Context(), "Failed to read cloned request body: %s", err)
+			return
+		}
+		defer r.Body.Close()
+
+		// Start AI Stream if does not exist, otherwise push segment to stream
+		_, aiStreamRunning := bsg.StreamPipelines[transcodeConfiguration.ManifestID]
+		if aiStreamRunning {
+			glog.Infof("Pushing segment to existing AI stream for manifestID=%s", transcodeConfiguration.ManifestID)
+			bsg.PushSegment(transcodeConfiguration.ManifestID, body)
+		} else {
+			req, err := http.NewRequestWithContext(
+				r.Context(),
+				http.MethodPost,
+				"http://localhost:5937/process/stream/start",
+				bytes.NewReader(transcodeConfiguration.AIParams),
+			)
+
+			if err != nil {
+				clog.Errorf(r.Context(), "StartStream request error: %s", err)
+				return
+			}
+
+			req.Header.Set(
+				"Livepeer",
+				aiConfigHdr,
+			)
+			req.Header.Set("Content-Type", "application/json")
+
+			bsg.StartStream().ServeHTTP(w, req)
+
+			glog.Infof("Pushing segment to NEW AI stream for manifestID=%s", transcodeConfiguration.ManifestID)
+			bsg.PushSegment(transcodeConfiguration.ManifestID, body)
+		}
+	})
+}
+
 func (bsg *BYOCGatewayServer) TranscodeWithAIStream() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		transcodeConfigurationHeader := r.Header.Get("Livepeer-Transcode-Configuration")
